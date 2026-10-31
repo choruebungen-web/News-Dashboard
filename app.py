@@ -1,6 +1,7 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 import pandas as pd
 from datetime import datetime
 
@@ -11,53 +12,58 @@ with st.sidebar:
     st.header("설정")
     keyword_input = st.text_area(
         "추적할 키워드 (쉼표로 구분)", 
-        value="방송미디어통신위원회, 방미통위, 방미심위, 과방위"
+        value="방송미디어통신위원회, 방미통위, 방미심위, 과방위, 국제OTT포럼"
     )
     search_button = st.button("뉴스 수집 시작")
 
-def get_naver_news(keyword):
-    url = f"https://search.naver.com/search.naver?where=news&query={keyword}"
-    # 네이버의 봇 차단을 피하기 위해 진짜 크롬 브라우저처럼 위장하는 부분 (강화됨)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+def get_google_news(keyword):
+    # 한글 키워드를 주소용으로 변환
+    encoded_keyword = urllib.parse.quote(keyword)
+    # 구글 뉴스 RSS 주소 (한국어, 한국 지역 설정)
+    url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
+    articles = []
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
+        # 봇 차단 방지용 헤더 추가
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req).read()
+        root = ET.fromstring(response)
         
-        articles = []
-        news_list = soup.select(".news_area")
-        
-        for news in news_list[:10]:
-            title_tag = news.select_one(".news_tit")
-            # 언론사 태그 선택자를 더 유연하게 변경
-            info_tag = news.select_one(".info_group .press") 
+        # 기사 내용 추출 (최대 15개)
+        for item in root.findall('.//item')[:15]:
+            title = item.find('title').text if item.find('title') is not None else "제목 없음"
+            link = item.find('link').text if item.find('link') is not None else ""
+            source = item.find('source').text if item.find('source') is not None else "언론사 미상"
             
-            if title_tag:
-                press_name = info_tag.text.replace("언론사 선정", "").strip() if info_tag else "언론사 미상"
-                articles.append({
-                    "키워드": keyword,
-                    "언론사": press_name,
-                    "제목": title_tag.get("title") or title_tag.text,
-                    "링크": title_tag.get("href")
-                })
-        return articles
+            articles.append({
+                "키워드": keyword,
+                "언론사": source,
+                "제목": title,
+                "링크": link
+            })
     except Exception as e:
-        return []
+        pass
+        
+    return articles
 
 if search_button:
     keywords = [k.strip() for k in keyword_input.split(',') if k.strip()]
     all_news = []
+    
     with st.spinner('뉴스를 수집하는 중입니다...'):
         for kw in keywords:
-            all_news.extend(get_naver_news(kw))
+            all_news.extend(get_google_news(kw))
     
     if all_news:
         df = pd.DataFrame(all_news)
         st.success(f"총 {len(df)}건의 기사를 가져왔습니다. ({datetime.now().strftime('%Y-%m-%d %H:%M 기준')})")
-        st.dataframe(df, column_config={"링크": st.column_config.LinkColumn("기사 링크")}, hide_index=True, use_container_width=True)
+        
+        # 데이터프레임 출력 설정
+        st.dataframe(
+            df, 
+            column_config={"링크": st.column_config.LinkColumn("기사 링크")}, 
+            hide_index=True, 
+            use_container_width=True
+        )
     else:
-        st.warning("검색된 뉴스가 없거나, 네이버에서 접근을 일시적으로 차단했습니다. 잠시 후 다시 시도해 주세요.")
+        st.warning("검색된 뉴스가 없습니다. 키워드를 변경해 보세요.")
